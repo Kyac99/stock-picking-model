@@ -1,0 +1,1 @@
+# Module des modèles pour le stock picking
