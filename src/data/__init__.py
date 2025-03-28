@@ -1,0 +1,1 @@
+# Module de gestion des données pour le modèle de stock picking
