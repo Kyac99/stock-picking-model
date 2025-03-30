@@ -1,678 +1,518 @@
 """
-Tableau de bord interactif pour visualiser les résultats du modèle de stock picking.
-Utilise Streamlit pour créer une interface utilisateur web.
+Module pour créer un tableau de bord interactif pour visualiser les résultats du modèle de stock picking.
 """
 import os
-import sys
 import pandas as pd
 import numpy as np
-import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
-import yfinance as yf
+import dash
+from dash import dcc, html
+from dash.dependencies import Input, Output
+import dash_bootstrap_components as dbc
 
-# Ajouter le répertoire parent au path pour pouvoir importer les modules du projet
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from models.scoring import FundamentalScorer, TechnicalScorer, MultifactorScorer
-from data.collectors import YahooFinanceCollector
-
-# Configuration de la page Streamlit
-st.set_page_config(
-    page_title="Stock Picking Dashboard",
-    page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-# Fonction pour charger les données de scores
-@st.cache_data(ttl=3600)  # Cache valide pendant 1 heure
-def load_scores(scores_path):
-    """Charge les données de scores depuis un fichier CSV."""
-    try:
-        return pd.read_csv(scores_path)
-    except Exception as e:
-        st.error(f"Erreur lors du chargement des scores: {e}")
-        return pd.DataFrame()
-
-# Fonction pour obtenir les données historiques d'une action
-@st.cache_data(ttl=3600)  # Cache valide pendant 1 heure
-def get_stock_data(ticker, period="1y"):
-    """Récupère les données historiques d'une action depuis Yahoo Finance."""
-    try:
-        return yf.Ticker(ticker).history(period=period)
-    except Exception as e:
-        st.error(f"Erreur lors de la récupération des données pour {ticker}: {e}")
-        return pd.DataFrame()
-
-# Fonction pour créer un graphique interactif des scores
-def plot_scores(scores_df, n_stocks=20, score_col='overall_score'):
-    """Crée un graphique à barres des scores des meilleures actions."""
-    # Prendre les n meilleures actions
-    top_stocks = scores_df.sort_values(score_col, ascending=False).head(n_stocks)
+class StockPickingDashboard:
+    """Classe pour créer un tableau de bord interactif pour visualiser les résultats du stock picking."""
     
-    # Créer le graphique
-    fig = px.bar(
-        top_stocks,
-        x='ticker',
-        y=score_col,
-        color=score_col,
-        color_continuous_scale='RdYlGn',
-        title=f"Top {n_stocks} Actions par Score"
-    )
-    
-    fig.update_layout(
-        xaxis_title="Ticker",
-        yaxis_title="Score",
-        coloraxis_colorbar=dict(title="Score"),
-        height=500
-    )
-    
-    return fig
-
-# Fonction pour créer un graphique des prix historiques
-def plot_price_history(data, ticker):
-    """Crée un graphique des prix historiques d'une action."""
-    if data.empty:
-        return None
+    def __init__(
+        self,
+        results_dir: str = "../data/results",
+        asset_dir: str = "../data/assets"
+    ):
+        """
+        Initialise le tableau de bord de stock picking.
         
-    fig = go.Figure()
-    
-    # Ajouter la trace du prix
-    fig.add_trace(
-        go.Scatter(
-            x=data.index,
-            y=data['Close'],
-            mode='lines',
-            name='Prix de clôture',
-            line=dict(color='royalblue', width=2)
-        )
-    )
-    
-    # Ajouter les moyennes mobiles si disponibles
-    if 'SMA_20' in data.columns:
-        fig.add_trace(
-            go.Scatter(
-                x=data.index,
-                y=data['SMA_20'],
-                mode='lines',
-                name='SMA 20',
-                line=dict(color='orange', width=1.5)
-            )
-        )
-    
-    if 'SMA_50' in data.columns:
-        fig.add_trace(
-            go.Scatter(
-                x=data.index,
-                y=data['SMA_50'],
-                mode='lines',
-                name='SMA 50',
-                line=dict(color='green', width=1.5)
-            )
-        )
-    
-    if 'SMA_200' in data.columns:
-        fig.add_trace(
-            go.Scatter(
-                x=data.index,
-                y=data['SMA_200'],
-                mode='lines',
-                name='SMA 200',
-                line=dict(color='red', width=1.5)
-            )
-        )
-    
-    # Mise en page
-    fig.update_layout(
-        title=f"Historique des prix pour {ticker}",
-        xaxis_title="Date",
-        yaxis_title="Prix ($)",
-        height=500,
-        hovermode="x unified"
-    )
-    
-    return fig
-
-# Fonction pour créer un graphique radar des sous-scores
-def plot_radar_chart(scores_df, ticker):
-    """Crée un graphique radar des sous-scores d'une action."""
-    # Filtrer les données pour le ticker spécifié
-    ticker_data = scores_df[scores_df['ticker'] == ticker]
-    
-    if ticker_data.empty:
-        return None
+        Args:
+            results_dir: Répertoire contenant les résultats du modèle
+            asset_dir: Répertoire pour les actifs statiques (images, etc.)
+        """
+        self.results_dir = results_dir
+        self.asset_dir = asset_dir
         
-    # Sélectionner les colonnes de scores (pas ticker ni overall_score)
-    score_cols = [col for col in ticker_data.columns if col not in ['ticker', 'overall_score']]
-    
-    if not score_cols:
-        return None
-        
-    values = ticker_data[score_cols].values.flatten().tolist()
-    
-    # Créer le graphique radar
-    fig = go.Figure()
-    
-    fig.add_trace(go.Scatterpolar(
-        r=values,
-        theta=score_cols,
-        fill='toself',
-        name=ticker
-    ))
-    
-    fig.update_layout(
-        polar=dict(
-            radialaxis=dict(
-                visible=True,
-                range=[0, 1]
-            )
-        ),
-        title=f"Analyse détaillée des scores pour {ticker}",
-        height=500
-    )
-    
-    return fig
-
-# Fonction pour créer une heatmap de corrélation entre les scores
-def plot_correlation_heatmap(scores_df):
-    """Crée une heatmap de corrélation entre les différents scores."""
-    # Sélectionner les colonnes de scores (pas ticker)
-    score_cols = [col for col in scores_df.columns if col != 'ticker']
-    
-    if len(score_cols) <= 1:
-        return None
-        
-    # Calculer la matrice de corrélation
-    corr_matrix = scores_df[score_cols].corr()
-    
-    # Créer la heatmap
-    fig = px.imshow(
-        corr_matrix,
-        text_auto=True,
-        aspect="auto",
-        color_continuous_scale='RdBu_r',
-        title="Corrélation entre les scores"
-    )
-    
-    fig.update_layout(height=600)
-    
-    return fig
-
-# Fonction principale pour l'application Streamlit
-def main():
-    """Fonction principale pour l'application Streamlit."""
-    # Titre de l'application
-    st.title("📊 Tableau de Bord du Modèle de Stock Picking")
-    
-    # Sidebar pour la navigation et les contrôles
-    st.sidebar.title("Navigation")
-    
-    # Onglets principaux
-    page = st.sidebar.radio(
-        "Sélectionnez une page",
-        ["Analyse des Scores", "Comparaison d'Actions", "Détails par Action", "Backtesting"]
-    )
-    
-    # Charger les données de scores (simulées pour l'exemple)
-    scores_path = st.sidebar.text_input(
-        "Chemin vers le fichier de scores",
-        "../data/results/multifactor_scores_20250330.csv"
-    )
-    
-    # Bouton pour charger les données
-    if st.sidebar.button("Charger les données"):
-        scores_df = load_scores(scores_path)
-        
-        if not scores_df.empty:
-            st.session_state['scores_df'] = scores_df
-            st.sidebar.success(f"Données chargées: {len(scores_df)} actions trouvées.")
-        else:
-            st.sidebar.error("Aucune donnée n'a pu être chargée. Vérifiez le chemin du fichier.")
-    
-    # Afficher différentes pages en fonction de la sélection
-    if page == "Analyse des Scores":
-        show_scores_analysis()
-    elif page == "Comparaison d'Actions":
-        show_stocks_comparison()
-    elif page == "Détails par Action":
-        show_stock_details()
-    elif page == "Backtesting":
-        show_backtesting()
-
-def show_scores_analysis():
-    """Affiche la page d'analyse des scores."""
-    st.header("Analyse des Scores")
-    
-    if 'scores_df' not in st.session_state:
-        st.info("Veuillez charger les données de scores à partir du panneau latéral.")
-        return
-    
-    scores_df = st.session_state['scores_df']
-    
-    # Options de filtrage
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        n_stocks = st.slider("Nombre d'actions à afficher", 5, 50, 20)
-    
-    with col2:
-        score_col = st.selectbox(
-            "Colonne de score à utiliser",
-            ['overall_score'] + [col for col in scores_df.columns if col not in ['ticker', 'overall_score']]
+        # Création de l'application Dash
+        self.app = dash.Dash(
+            __name__,
+            external_stylesheets=[dbc.themes.FLATLY],
+            suppress_callback_exceptions=True
         )
-    
-    with col3:
-        min_score = st.slider("Score minimum", 0.0, 1.0, 0.0, 0.05)
-        filtered_df = scores_df[scores_df[score_col] >= min_score]
-    
-    # Graphique des scores
-    st.plotly_chart(plot_scores(filtered_df, n_stocks, score_col), use_container_width=True)
-    
-    # Statistiques des scores
-    st.subheader("Statistiques des Scores")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.metric("Score moyen", f"{scores_df[score_col].mean():.3f}")
-        st.metric("Score médian", f"{scores_df[score_col].median():.3f}")
-    
-    with col2:
-        st.metric("Score maximum", f"{scores_df[score_col].max():.3f}")
-        st.metric("Score minimum", f"{scores_df[score_col].min():.3f}")
-    
-    # Heatmap de corrélation
-    st.subheader("Corrélation entre les Scores")
-    corr_fig = plot_correlation_heatmap(scores_df)
-    if corr_fig:
-        st.plotly_chart(corr_fig, use_container_width=True)
-    else:
-        st.info("Pas assez de colonnes de scores pour calculer la corrélation.")
-    
-    # Tableau des scores
-    st.subheader("Tableau des Scores")
-    st.dataframe(filtered_df.sort_values(score_col, ascending=False))
-
-def show_stocks_comparison():
-    """Affiche la page de comparaison d'actions."""
-    st.header("Comparaison d'Actions")
-    
-    if 'scores_df' not in st.session_state:
-        st.info("Veuillez charger les données de scores à partir du panneau latéral.")
-        return
-    
-    scores_df = st.session_state['scores_df']
-    
-    # Sélection des actions à comparer
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        tickers = st.multiselect(
-            "Sélectionnez les actions à comparer",
-            options=scores_df['ticker'].unique(),
-            default=scores_df.sort_values('overall_score', ascending=False).head(3)['ticker'].tolist()
-        )
-    
-    with col2:
-        period = st.selectbox(
-            "Période historique",
-            options=["1mo", "3mo", "6mo", "1y", "2y", "5y", "10y"],
-            index=3
-        )
-    
-    if not tickers:
-        st.warning("Veuillez sélectionner au moins une action.")
-        return
-    
-    # Récupérer les données historiques
-    data = {}
-    for ticker in tickers:
-        data[ticker] = get_stock_data(ticker, period)
-    
-    # Graphique des prix normalisés
-    st.subheader("Comparaison des Prix Normalisés")
-    
-    # Créer un DataFrame pour les prix normalisés
-    normalized_prices = pd.DataFrame(index=data[tickers[0]].index)
-    
-    for ticker in tickers:
-        if not data[ticker].empty:
-            normalized_prices[ticker] = data[ticker]['Close'] / data[ticker]['Close'].iloc[0] * 100
-    
-    # Créer le graphique
-    fig = px.line(
-        normalized_prices,
-        title="Évolution des Prix Normalisés (Base 100)",
-        labels={"value": "Prix (Base 100)", "index": "Date"}
-    )
-    
-    fig.update_layout(
-        height=500,
-        hovermode="x unified",
-        legend_title="Actions"
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Tableau de comparaison des scores
-    st.subheader("Comparaison des Scores")
-    
-    comparison_df = scores_df[scores_df['ticker'].isin(tickers)].copy()
-    comparison_df.set_index('ticker', inplace=True)
-    
-    # Tableau pivot pour faciliter la comparaison
-    pivot_df = comparison_df.transpose()
-    
-    # Appliquer une mise en forme conditionnelle
-    st.dataframe(pivot_df.style.highlight_max(axis=1, color='lightgreen').highlight_min(axis=1, color='#FFB6C1'))
-    
-    # Graphique radar pour comparer les scores
-    st.subheader("Comparaison des Scores par Catégorie")
-    
-    # Sélectionner les colonnes de scores (pas ticker ni overall_score)
-    score_cols = [col for col in scores_df.columns if col not in ['ticker', 'overall_score']]
-    
-    if score_cols:
-        radar_fig = go.Figure()
         
-        for ticker in tickers:
-            ticker_data = scores_df[scores_df['ticker'] == ticker]
-            if not ticker_data.empty:
-                values = ticker_data[score_cols].values.flatten().tolist()
-                radar_fig.add_trace(go.Scatterpolar(
-                    r=values,
-                    theta=score_cols,
-                    fill='toself',
-                    name=ticker
-                ))
+        self.app.title = "Stock Picking Dashboard"
+        self.setup_layout()
+        self.setup_callbacks()
         
-        radar_fig.update_layout(
-            polar=dict(
-                radialaxis=dict(
-                    visible=True,
-                    range=[0, 1]
+    def setup_layout(self):
+        """Configure la mise en page du tableau de bord."""
+        self.app.layout = dbc.Container(
+            [
+                # En-tête
+                dbc.Row(
+                    dbc.Col(
+                        html.H1("Stock Picking Dashboard", className="text-center my-4"),
+                        width=12
+                    )
+                ),
+                
+                # Filtres
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            [
+                                html.H5("Filtres", className="mb-3"),
+                                
+                                html.Label("Type de score:"),
+                                dcc.Dropdown(
+                                    id="score-type-dropdown",
+                                    options=[
+                                        {"label": "Multifactoriel", "value": "multifactor"},
+                                        {"label": "Fondamental", "value": "fundamental"},
+                                        {"label": "Technique", "value": "technical"}
+                                    ],
+                                    value="multifactor",
+                                    className="mb-3"
+                                ),
+                                
+                                html.Label("Score minimum:"),
+                                dcc.Slider(
+                                    id="min-score-slider",
+                                    min=0,
+                                    max=1,
+                                    step=0.05,
+                                    value=0.5,
+                                    marks={i/10: str(i/10) for i in range(0, 11, 2)},
+                                    className="mb-3"
+                                ),
+                                
+                                html.Label("Nombre de résultats:"),
+                                dcc.Slider(
+                                    id="num-results-slider",
+                                    min=5,
+                                    max=50,
+                                    step=5,
+                                    value=20,
+                                    marks={i: str(i) for i in range(5, 51, 5)},
+                                    className="mb-3"
+                                )
+                            ],
+                            width=3
+                        ),
+                        
+                        # Graphique des meilleurs scores
+                        dbc.Col(
+                            [
+                                html.H5("Meilleurs scores", className="mb-3"),
+                                dcc.Graph(id="top-scores-graph")
+                            ],
+                            width=9
+                        )
+                    ],
+                    className="mb-4"
+                ),
+                
+                # Tableau des résultats
+                dbc.Row(
+                    dbc.Col(
+                        [
+                            html.H5("Résultats détaillés", className="mb-3"),
+                            html.Div(id="results-table")
+                        ],
+                        width=12
+                    ),
+                    className="mb-4"
+                ),
+                
+                # Graphique radar pour la comparaison des actions
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            [
+                                html.H5("Analyse comparative", className="mb-3"),
+                                html.Label("Sélectionnez les actions à comparer:"),
+                                dcc.Dropdown(
+                                    id="stock-comparison-dropdown",
+                                    multi=True,
+                                    className="mb-3"
+                                )
+                            ],
+                            width=3
+                        ),
+                        
+                        dbc.Col(
+                            dcc.Graph(id="comparison-radar-chart"),
+                            width=9
+                        )
+                    ],
+                    className="mb-4"
+                ),
+                
+                # Distribution des scores
+                dbc.Row(
+                    dbc.Col(
+                        [
+                            html.H5("Distribution des scores", className="mb-3"),
+                            dcc.Graph(id="score-distribution-histogram")
+                        ],
+                        width=12
+                    ),
+                    className="mb-4"
+                ),
+                
+                # Pied de page
+                dbc.Row(
+                    dbc.Col(
+                        html.P(
+                            "© 2025 - Modèle de Stock Picking - Développé par l'équipe Quant Finance",
+                            className="text-center text-muted"
+                        ),
+                        width=12
+                    )
                 )
-            ),
-            title="Comparaison des Scores par Catégorie",
-            height=600
+            ],
+            fluid=True,
+            className="px-4 py-3"
         )
         
-        st.plotly_chart(radar_fig, use_container_width=True)
-    else:
-        st.info("Pas assez de colonnes de scores pour créer un graphique radar.")
-
-def show_stock_details():
-    """Affiche la page de détails par action."""
-    st.header("Détails par Action")
-    
-    if 'scores_df' not in st.session_state:
-        st.info("Veuillez charger les données de scores à partir du panneau latéral.")
-        return
-    
-    scores_df = st.session_state['scores_df']
-    
-    # Sélection de l'action
-    ticker = st.selectbox(
-        "Sélectionnez une action",
-        options=scores_df['ticker'].unique(),
-        index=0
-    )
-    
-    if not ticker:
-        return
-    
-    # Récupérer les données de l'action
-    col1, col2 = st.columns([1, 2])
-    
-    with col1:
-        period = st.selectbox(
-            "Période historique",
-            options=["1mo", "3mo", "6mo", "1y", "2y", "5y", "10y"],
-            index=3
+    def setup_callbacks(self):
+        """Configure les callbacks pour l'interactivité du tableau de bord."""
+        
+        # Callback pour mettre à jour le graphique des meilleurs scores
+        @self.app.callback(
+            Output("top-scores-graph", "figure"),
+            [
+                Input("score-type-dropdown", "value"),
+                Input("min-score-slider", "value"),
+                Input("num-results-slider", "value")
+            ]
         )
-        
-        # Afficher les scores de l'action
-        st.subheader("Scores")
-        
-        ticker_scores = scores_df[scores_df['ticker'] == ticker].iloc[0]
-        
-        # Score global
-        st.metric(
-            "Score Global",
-            f"{ticker_scores['overall_score']:.3f}",
-            delta=f"{ticker_scores['overall_score'] - scores_df['overall_score'].mean():.3f}",
-            delta_color="normal"
-        )
-        
-        # Autres scores
-        score_cols = [col for col in scores_df.columns if col not in ['ticker', 'overall_score']]
-        
-        for col in score_cols:
-            if col in ticker_scores:
-                st.metric(
-                    col,
-                    f"{ticker_scores[col]:.3f}",
-                    delta=f"{ticker_scores[col] - scores_df[col].mean():.3f}",
-                    delta_color="normal"
-                )
-    
-    with col2:
-        # Récupérer et afficher les données historiques
-        stock_data = get_stock_data(ticker, period)
-        
-        if not stock_data.empty:
-            # Graphique des prix
-            price_fig = plot_price_history(stock_data, ticker)
-            st.plotly_chart(price_fig, use_container_width=True)
+        def update_top_scores_graph(score_type, min_score, num_results):
+            # Charger les données
+            df = self.load_score_data(score_type)
             
-            # Indicateurs de performance
-            if len(stock_data) > 1:
-                # Calculer les rendements
-                returns = stock_data['Close'].pct_change().dropna()
+            if df is None or df.empty:
+                return self.empty_figure("Aucune donnée disponible")
                 
-                # Métriques de performance
-                st.subheader("Indicateurs de Performance")
+            # Filtrer les données
+            filtered_df = df[df["overall_score"] >= min_score].sort_values("overall_score", ascending=False).head(num_results)
+            
+            if filtered_df.empty:
+                return self.empty_figure("Aucun résultat ne correspond aux critères de filtrage")
                 
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    # Rendement total
-                    total_return = (stock_data['Close'].iloc[-1] / stock_data['Close'].iloc[0] - 1) * 100
-                    st.metric("Rendement Total", f"{total_return:.2f}%")
-                
-                with col2:
-                    # Volatilité annualisée
-                    volatility = returns.std() * np.sqrt(252) * 100
-                    st.metric("Volatilité Annualisée", f"{volatility:.2f}%")
-                
-                with col3:
-                    # Ratio de Sharpe (simplifié)
-                    sharpe = (returns.mean() * 252) / (returns.std() * np.sqrt(252))
-                    st.metric("Ratio de Sharpe", f"{sharpe:.2f}")
-                
-                # Graphique de rendements
-                returns_fig = px.histogram(
-                    returns,
-                    nbins=50,
-                    title=f"Distribution des Rendements Journaliers pour {ticker}",
-                    labels={"value": "Rendement (%)", "count": "Fréquence"}
-                )
-                
-                returns_fig.update_layout(height=400)
-                
-                st.plotly_chart(returns_fig, use_container_width=True)
-                
-                # Graphique radar des scores
-                radar_fig = plot_radar_chart(scores_df, ticker)
-                
-                if radar_fig:
-                    st.plotly_chart(radar_fig, use_container_width=True)
-        else:
-            st.error(f"Impossible de récupérer les données pour {ticker}")
-
-def show_backtesting():
-    """Affiche la page de backtesting."""
-    st.header("Backtesting de la Stratégie")
-    
-    if 'scores_df' not in st.session_state:
-        st.info("Veuillez charger les données de scores à partir du panneau latéral.")
-        return
-    
-    scores_df = st.session_state['scores_df']
-    
-    # Paramètres de backtesting
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        n_stocks = st.slider("Nombre d'actions dans le portefeuille", 5, 30, 10)
-    
-    with col2:
-        lookback_period = st.selectbox(
-            "Période de backtesting",
-            options=["1mo", "3mo", "6mo", "1y", "2y", "5y"],
-            index=3
+            # Créer le graphique
+            fig = px.bar(
+                filtered_df,
+                x="ticker",
+                y="overall_score",
+                color="overall_score",
+                color_continuous_scale="viridis",
+                labels={"ticker": "Symbole", "overall_score": "Score global"},
+                title=f"Top {num_results} actions par score {self.get_score_type_label(score_type)}"
+            )
+            
+            fig.update_layout(
+                coloraxis_showscale=True,
+                xaxis_tickangle=-45,
+                yaxis_range=[0, 1]
+            )
+            
+            return fig
+            
+        # Callback pour mettre à jour le tableau des résultats
+        @self.app.callback(
+            Output("results-table", "children"),
+            [
+                Input("score-type-dropdown", "value"),
+                Input("min-score-slider", "value"),
+                Input("num-results-slider", "value")
+            ]
         )
-    
-    with col3:
-        rebalance_freq = st.selectbox(
-            "Fréquence de rééquilibrage",
-            options=["Quotidienne", "Hebdomadaire", "Mensuelle", "Trimestrielle"],
-            index=2
+        def update_results_table(score_type, min_score, num_results):
+            # Charger les données
+            df = self.load_score_data(score_type)
+            
+            if df is None or df.empty:
+                return html.Div("Aucune donnée disponible", className="text-center text-muted")
+                
+            # Filtrer les données
+            filtered_df = df[df["overall_score"] >= min_score].sort_values("overall_score", ascending=False).head(num_results)
+            
+            if filtered_df.empty:
+                return html.Div("Aucun résultat ne correspond aux critères de filtrage", className="text-center text-muted")
+                
+            # Formater le tableau
+            columns_to_display = ["ticker", "overall_score"]
+            if score_type == "multifactor":
+                columns_to_display.extend(["fundamental_score", "technical_score", "quality_score"])
+                
+            formatted_df = filtered_df[columns_to_display].copy()
+            
+            # Renommer les colonnes
+            formatted_df.columns = [self.get_column_label(col) for col in formatted_df.columns]
+            
+            # Formater les scores
+            for col in formatted_df.columns:
+                if "Score" in col:
+                    formatted_df[col] = formatted_df[col].apply(lambda x: f"{x:.2f}" if not pd.isna(x) else "N/A")
+                    
+            # Créer le tableau HTML
+            table = dbc.Table.from_dataframe(
+                formatted_df,
+                striped=True,
+                bordered=True,
+                hover=True,
+                responsive=True,
+                className="text-center"
+            )
+            
+            return table
+            
+        # Callback pour mettre à jour le dropdown de comparaison des actions
+        @self.app.callback(
+            Output("stock-comparison-dropdown", "options"),
+            [Input("score-type-dropdown", "value")]
         )
-    
-    # Sélection des actions pour le backtesting
-    top_stocks = scores_df.sort_values('overall_score', ascending=False).head(n_stocks)['ticker'].tolist()
-    
-    st.subheader(f"Top {n_stocks} Actions pour le Backtesting")
-    st.write(", ".join(top_stocks))
-    
-    # Simuler le backtesting (simplifié)
-    st.info("Simulation de backtesting en cours... Cette fonctionnalité sera implémentée ultérieurement.")
-    
-    # Placeholder pour les résultats de backtesting
-    st.subheader("Résultats du Backtesting")
-    
-    # Créer un graphique exemple
-    dates = pd.date_range(end=datetime.now(), periods=252, freq='B')
-    
-    # Simuler les performances du portefeuille et du benchmark
-    np.random.seed(42)  # Pour la reproducibilité
-    portfolio_returns = np.random.normal(0.0003, 0.01, len(dates))
-    benchmark_returns = np.random.normal(0.0002, 0.01, len(dates))
-    
-    # Créer les indices cumulatifs
-    portfolio_index = (1 + pd.Series(portfolio_returns)).cumprod() * 100
-    benchmark_index = (1 + pd.Series(benchmark_returns)).cumprod() * 100
-    
-    # Créer le DataFrame
-    backtesting_df = pd.DataFrame({
-        'Date': dates,
-        'Portfolio': portfolio_index,
-        'Benchmark': benchmark_index
-    })
-    
-    # Créer le graphique
-    fig = px.line(
-        backtesting_df,
-        x='Date',
-        y=['Portfolio', 'Benchmark'],
-        title="Performance du Portefeuille vs. Benchmark (Simulation)",
-        labels={"value": "Performance", "variable": ""}
-    )
-    
-    fig.update_layout(height=500, hovermode="x unified")
-    
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Statistiques de performance
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric(
-            "Rendement Annualisé",
-            f"{((portfolio_index.iloc[-1] / 100) ** (252 / len(dates)) - 1) * 100:.2f}%",
-            f"{((portfolio_index.iloc[-1] / benchmark_index.iloc[-1]) - 1) * 100:.2f}%",
-            delta_color="normal"
+        def update_comparison_dropdown(score_type):
+            # Charger les données
+            df = self.load_score_data(score_type)
+            
+            if df is None or df.empty:
+                return []
+                
+            # Créer les options du dropdown
+            options = [{"label": ticker, "value": ticker} for ticker in df["ticker"]]
+            
+            return options
+            
+        # Callback pour mettre à jour le graphique radar de comparaison
+        @self.app.callback(
+            Output("comparison-radar-chart", "figure"),
+            [
+                Input("stock-comparison-dropdown", "value"),
+                Input("score-type-dropdown", "value")
+            ]
         )
-    
-    with col2:
-        st.metric(
-            "Volatilité Annualisée",
-            f"{np.std(portfolio_returns) * np.sqrt(252) * 100:.2f}%",
-            f"{(np.std(portfolio_returns) - np.std(benchmark_returns)) * np.sqrt(252) * 100:.2f}%",
-            delta_color="inverse"
+        def update_comparison_radar(selected_stocks, score_type):
+            if not selected_stocks or len(selected_stocks) == 0:
+                return self.empty_figure("Sélectionnez des actions à comparer")
+                
+            # Charger les données
+            df = self.load_score_data(score_type)
+            
+            if df is None or df.empty:
+                return self.empty_figure("Aucune donnée disponible")
+                
+            # Filtrer les données pour les actions sélectionnées
+            filtered_df = df[df["ticker"].isin(selected_stocks)]
+            
+            if filtered_df.empty:
+                return self.empty_figure("Aucune donnée disponible pour les actions sélectionnées")
+                
+            # Définir les catégories pour le graphique radar
+            if score_type == "multifactor":
+                categories = ["overall_score", "fundamental_score", "technical_score", "quality_score"]
+            elif score_type == "fundamental":
+                # Prendre les 6 premiers scores fondamentaux
+                categories = ["overall_score"] + list(filtered_df.columns[2:8])
+            else:  # score_type == "technical"
+                # Prendre les 6 premiers scores techniques
+                categories = ["overall_score"] + list(filtered_df.columns[2:8])
+                
+            # Créer le graphique radar
+            fig = go.Figure()
+            
+            for _, row in filtered_df.iterrows():
+                data = []
+                for cat in categories:
+                    if cat in row and not pd.isna(row[cat]):
+                        data.append(row[cat])
+                    else:
+                        data.append(0)
+                        
+                # Ajouter une trace pour chaque action
+                fig.add_trace(go.Scatterpolar(
+                    r=data,
+                    theta=[self.get_column_label(cat) for cat in categories],
+                    fill='toself',
+                    name=row["ticker"]
+                ))
+                
+            fig.update_layout(
+                polar=dict(
+                    radialaxis=dict(
+                        visible=True,
+                        range=[0, 1]
+                    )
+                ),
+                showlegend=True,
+                title=f"Comparaison des scores {self.get_score_type_label(score_type)}"
+            )
+            
+            return fig
+            
+        # Callback pour mettre à jour l'histogramme de distribution des scores
+        @self.app.callback(
+            Output("score-distribution-histogram", "figure"),
+            [Input("score-type-dropdown", "value")]
         )
-    
-    with col3:
-        portfolio_sharpe = (np.mean(portfolio_returns) * 252) / (np.std(portfolio_returns) * np.sqrt(252))
-        benchmark_sharpe = (np.mean(benchmark_returns) * 252) / (np.std(benchmark_returns) * np.sqrt(252))
+        def update_score_distribution(score_type):
+            # Charger les données
+            df = self.load_score_data(score_type)
+            
+            if df is None or df.empty:
+                return self.empty_figure("Aucune donnée disponible")
+                
+            # Créer l'histogramme
+            fig = px.histogram(
+                df,
+                x="overall_score",
+                nbins=20,
+                range_x=[0, 1],
+                labels={"overall_score": "Score global"},
+                title=f"Distribution des scores {self.get_score_type_label(score_type)}"
+            )
+            
+            fig.update_layout(
+                bargap=0.2,
+                xaxis_range=[0, 1]
+            )
+            
+            return fig
+            
+    def load_score_data(self, score_type: str) -> pd.DataFrame:
+        """
+        Charge les données de score depuis les fichiers CSV.
         
-        st.metric(
-            "Ratio de Sharpe",
-            f"{portfolio_sharpe:.2f}",
-            f"{portfolio_sharpe - benchmark_sharpe:.2f}",
-            delta_color="normal"
+        Args:
+            score_type: Type de score à charger ('multifactor', 'fundamental' ou 'technical')
+            
+        Returns:
+            DataFrame contenant les données de score
+        """
+        # Obtenir le chemin du fichier le plus récent pour le type de score
+        file_pattern = f"{score_type}_scores_*.csv"
+        matching_files = []
+        
+        for filename in os.listdir(self.results_dir):
+            if filename.startswith(f"{score_type}_scores_") and filename.endswith(".csv"):
+                matching_files.append(os.path.join(self.results_dir, filename))
+                
+        if not matching_files:
+            return None
+            
+        # Trier par date de modification (le plus récent en premier)
+        most_recent_file = max(matching_files, key=os.path.getmtime)
+        
+        # Charger le fichier
+        try:
+            df = pd.read_csv(most_recent_file)
+            return df
+        except Exception as e:
+            print(f"Erreur lors du chargement du fichier {most_recent_file}: {str(e)}")
+            return None
+            
+    def get_score_type_label(self, score_type: str) -> str:
+        """
+        Retourne le libellé du type de score.
+        
+        Args:
+            score_type: Type de score ('multifactor', 'fundamental' ou 'technical')
+            
+        Returns:
+            Libellé du type de score
+        """
+        labels = {
+            "multifactor": "multifactoriels",
+            "fundamental": "fondamentaux",
+            "technical": "techniques"
+        }
+        
+        return labels.get(score_type, score_type)
+        
+    def get_column_label(self, column: str) -> str:
+        """
+        Retourne le libellé d'une colonne pour l'affichage.
+        
+        Args:
+            column: Nom de la colonne
+            
+        Returns:
+            Libellé de la colonne
+        """
+        labels = {
+            "ticker": "Symbole",
+            "overall_score": "Score global",
+            "fundamental_score": "Score fondamental",
+            "technical_score": "Score technique",
+            "quality_score": "Score qualitatif",
+            
+            # Scores fondamentaux
+            "PE_Ratio": "P/E Ratio",
+            "PB_Ratio": "P/B Ratio",
+            "EV_EBITDA": "EV/EBITDA",
+            "Price_to_Sales": "Price/Sales",
+            "ROE": "ROE",
+            "ROA": "ROA",
+            "ROIC": "ROIC",
+            "Profit_Margin": "Marge bénéficiaire",
+            "Revenue_Growth": "Croissance des revenus",
+            "Earnings_Growth": "Croissance des résultats",
+            "Debt_to_Equity": "Dette/Fonds propres",
+            "Current_Ratio": "Ratio de liquidité",
+            "Interest_Coverage": "Couverture des intérêts",
+            
+            # Scores techniques
+            "trend_ma": "Tendance (MM)",
+            "macd": "MACD",
+            "rsi": "RSI",
+            "stochastic": "Stochastique",
+            "bollinger": "Bandes de Bollinger",
+            "atr": "ATR",
+            "obv": "OBV",
+            "volume_ma": "Volume (MM)",
+            "relative_strength": "Force relative"
+        }
+        
+        return labels.get(column, column)
+        
+    def empty_figure(self, message: str) -> go.Figure:
+        """
+        Crée une figure vide avec un message.
+        
+        Args:
+            message: Message à afficher
+            
+        Returns:
+            Figure Plotly vide avec un message
+        """
+        fig = go.Figure()
+        
+        fig.add_annotation(
+            x=0.5,
+            y=0.5,
+            text=message,
+            showarrow=False,
+            font=dict(size=16)
         )
-    
-    with col4:
-        # Maximum Drawdown
-        def calculate_max_drawdown(returns):
-            cum_returns = (1 + returns).cumprod()
-            running_max = cum_returns.cummax()
-            drawdown = (cum_returns / running_max) - 1
-            return drawdown.min() * 100
         
-        portfolio_mdd = calculate_max_drawdown(portfolio_returns)
-        benchmark_mdd = calculate_max_drawdown(benchmark_returns)
-        
-        st.metric(
-            "Drawdown Maximum",
-            f"{portfolio_mdd:.2f}%",
-            f"{portfolio_mdd - benchmark_mdd:.2f}%",
-            delta_color="inverse"
+        fig.update_layout(
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)"
         )
-    
-    # Tableau des positions
-    st.subheader("Positions Actuelles (Simulation)")
-    
-    # Simuler les positions actuelles
-    positions = []
-    
-    for ticker in top_stocks:
-        # Simuler une allocation aléatoire
-        allocation = np.random.uniform(0.05, 0.15)
         
-        # Simuler un rendement
-        performance = np.random.uniform(-0.1, 0.2)
+        return fig
         
-        positions.append({
-            'Ticker': ticker,
-            'Allocation': allocation,
-            'Performance': performance,
-            'Score': scores_df[scores_df['ticker'] == ticker]['overall_score'].values[0]
-        })
-    
-    # Normaliser les allocations pour qu'elles somment à 1
-    total_allocation = sum(pos['Allocation'] for pos in positions)
-    
-    for pos in positions:
-        pos['Allocation'] /= total_allocation
-    
-    # Créer le DataFrame
-    positions_df = pd.DataFrame(positions)
-    
-    # Afficher le tableau
-    st.dataframe(
-        positions_df.style.format({
-            'Allocation': '{:.2%}',
-            'Performance': '{:.2%}',
-            'Score': '{:.3f}'
-        }).bar(subset=['Allocation'], color='#90ee90').bar(subset=['Performance'], color=['#ff9999', '#90ee90'])
-    )
-
-# Point d'entrée de l'application
+    def run_server(self, debug: bool = True, port: int = 8050):
+        """
+        Lance le serveur du tableau de bord.
+        
+        Args:
+            debug: Mode debug actif ou non
+            port: Port sur lequel lancer le serveur
+        """
+        self.app.run_server(debug=debug, port=port)
+        
+        
+# Point d'entrée pour lancer le tableau de bord
 if __name__ == "__main__":
-    main()
+    dashboard = StockPickingDashboard()
+    dashboard.run_server()
