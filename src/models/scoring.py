@@ -778,45 +778,32 @@ class TechnicalScorer(StockScorer):
         stock_data = stock_data.loc[common_dates]
         market_data_aligned = market_data_aligned.loc[common_dates]
         
-        # Calculer les rendements
-        stock_returns = stock_data['Close'].pct_change().dropna()
-        market_returns = market_data_aligned['Close'].pct_change().dropna()
+        # Calculer les rendements pour l'action et l'indice
+        stock_returns = stock_data['Close'].pct_change()
+        market_returns = market_data_aligned['Close'].pct_change()
         
-        # Calculer la force relative à différentes périodes
-        periods = [5, 20, 60]  # 1 semaine, 1 mois, 3 mois
-        rs_scores = []
+        # Calculer la force relative sur différentes périodes
+        # 1 mois (environ 21 jours de trading)
+        rs_1m = (1 + stock_returns.iloc[-21:]).prod() / (1 + market_returns.iloc[-21:]).prod()
         
-        for period in periods:
-            if len(stock_returns) < period:
-                continue
-                
-            # Rendement cumulé
-            stock_cum_return = (1 + stock_returns.iloc[-period:]).prod() - 1
-            market_cum_return = (1 + market_returns.iloc[-period:]).prod() - 1
-            
-            # Force relative (différence de rendement)
-            relative_strength = stock_cum_return - market_cum_return
-            
-            # Convertir en score entre 0 et 1
-            if relative_strength <= -0.2:  # Sous-performance forte
-                rs_score = 0.0
-            elif relative_strength <= 0:  # Sous-performance légère
-                rs_score = 0.5 + 2.5 * relative_strength  # 0.5 à 0.0
-            elif relative_strength <= 0.2:  # Surperformance légère à moyenne
-                rs_score = 0.5 + 2.5 * relative_strength  # 0.5 à 1.0
-            else:  # Surperformance forte
-                rs_score = 1.0
-                
-            rs_scores.append(rs_score)
-            
-        # Si aucun score n'a pu être calculé, retourner une valeur neutre
-        if not rs_scores:
-            return 0.5
-            
-        # Moyenne pondérée des scores par période (plus de poids aux périodes récentes)
-        weights = [0.5, 0.3, 0.2]  # 5j: 50%, 20j: 30%, 60j: 20%
-        return sum(score * weight for score, weight in zip(rs_scores, weights[:len(rs_scores)])) / sum(weights[:len(rs_scores)])
+        # 3 mois (environ 63 jours de trading)
+        rs_3m = (1 + stock_returns.iloc[-63:]).prod() / (1 + market_returns.iloc[-63:]).prod()
         
+        # 6 mois (environ 126 jours de trading)
+        rs_6m = (1 + stock_returns.iloc[-126:]).prod() / (1 + market_returns.iloc[-126:]).prod()
+        
+        # Pondérer les périodes (privilégier les plus récentes)
+        weighted_rs = 0.5 * rs_1m + 0.3 * rs_3m + 0.2 * rs_6m
+        
+        # Convertir en score entre 0 et 1
+        # Une force relative de 1 signifie une performance identique au marché
+        if weighted_rs >= 1:
+            # Surperformance - score entre 0.5 et 1.0
+            return min(0.5 + 0.5 * min(weighted_rs - 1, 1), 1.0)
+        else:
+            # Sous-performance - score entre 0 et 0.5
+            return max(0.5 - 0.5 * min(1 - weighted_rs, 1), 0.0)
+    
     def _calculate_weighted_score(self, scores: Dict[str, float]) -> float:
         """
         Calcule un score global pondéré.
@@ -844,124 +831,207 @@ class TechnicalScorer(StockScorer):
 
 
 class MultifactorScorer(StockScorer):
-    """Modèle de scoring combinant des critères fondamentaux et techniques."""
+    """Modèle de scoring combinant des critères fondamentaux, techniques et qualitatifs."""
     
     def __init__(
         self,
         output_dir: str = "../data/results",
-        fundamental_weight: float = 0.7,
-        technical_weight: float = 0.3,
-        fundamental_scorer: Optional[FundamentalScorer] = None,
-        technical_scorer: Optional[TechnicalScorer] = None
+        factor_weights: Optional[Dict[str, float]] = None,
+        quality_weights: Optional[Dict[str, float]] = None
     ):
         """
         Initialise un modèle de scoring multifactoriel.
         
         Args:
             output_dir: Répertoire pour sauvegarder les résultats
-            fundamental_weight: Poids pour le score fondamental (0-1)
-            technical_weight: Poids pour le score technique (0-1)
-            fundamental_scorer: Instance de FundamentalScorer à utiliser
-            technical_scorer: Instance de TechnicalScorer à utiliser
+            factor_weights: Dictionnaire des poids pour chaque facteur
+            quality_weights: Dictionnaire des poids pour les critères qualitatifs
         """
         super().__init__(output_dir)
         
-        # Normaliser les poids pour qu'ils somment à 1
-        total_weight = fundamental_weight + technical_weight
-        self.fundamental_weight = fundamental_weight / total_weight
-        self.technical_weight = technical_weight / total_weight
+        # Définir les poids par défaut si non spécifiés
+        self.factor_weights = factor_weights or {
+            'fundamental': 0.6,
+            'technical': 0.3,
+            'quality': 0.1
+        }
         
-        # Initialiser les scorers si non fournis
-        self.fundamental_scorer = fundamental_scorer or FundamentalScorer(output_dir)
-        self.technical_scorer = technical_scorer or TechnicalScorer(output_dir)
+        # Normaliser les poids des facteurs
+        total_weight = sum(self.factor_weights.values())
+        for key in self.factor_weights:
+            self.factor_weights[key] /= total_weight
+            
+        # Définir les poids des critères qualitatifs
+        self.quality_weights = quality_weights or {
+            'management': 0.3,
+            'industry_outlook': 0.3,
+            'competitive_advantage': 0.2,
+            'esg_score': 0.1,
+            'regulatory_risks': 0.1
+        }
+        
+        # Normaliser les poids des critères qualitatifs
+        quality_total = sum(self.quality_weights.values())
+        for key in self.quality_weights:
+            self.quality_weights[key] /= quality_total
+            
+        # Initialisations des scorers individuels
+        self.fundamental_scorer = FundamentalScorer(output_dir)
+        self.technical_scorer = TechnicalScorer(output_dir)
         
     def score_stocks(
         self,
         fundamental_data: Dict[str, pd.DataFrame],
         technical_data: Dict[str, pd.DataFrame],
+        quality_data: Optional[Dict[str, Dict[str, float]]] = None,
         market_data: Optional[pd.DataFrame] = None,
         save: bool = True
     ) -> pd.DataFrame:
         """
-        Calcule les scores combinés pour un ensemble d'actions.
+        Calcule les scores multifactoriels pour un ensemble d'actions.
         
         Args:
             fundamental_data: Dictionnaire de DataFrames avec les données fondamentales par ticker
             technical_data: Dictionnaire de DataFrames avec les données techniques par ticker
+            quality_data: Dictionnaire des scores qualitatifs par ticker (optionnel)
             market_data: DataFrame avec les données de l'indice de référence (pour la force relative)
             save: Si True, sauvegarde les scores
             
         Returns:
             DataFrame avec les scores par action
         """
-        # Calculer les scores fondamentaux et techniques séparément
-        # save=False pour éviter de sauvegarder les scores intermédiaires
+        # Calculer les scores fondamentaux
         fundamental_scores = self.fundamental_scorer.score_stocks(fundamental_data, save=False)
+        
+        # Calculer les scores techniques
         technical_scores = self.technical_scorer.score_stocks(technical_data, market_data, save=False)
         
-        # Vérifier si des scores ont pu être calculés
-        if fundamental_scores.empty and technical_scores.empty:
-            logger.warning("Aucun score n'a pu être calculé")
+        # Fusionner les scores
+        all_scores = []
+        
+        # Liste de tous les tickers uniques
+        all_tickers = list(set(
+            list(fundamental_data.keys()) + 
+            list(technical_data.keys()) +
+            (list(quality_data.keys()) if quality_data else [])
+        ))
+        
+        for ticker in all_tickers:
+            try:
+                # Initialiser les scores par défaut à None
+                f_score = None
+                t_score = None
+                q_score = None
+                
+                # Récupérer le score fondamental si disponible
+                if not fundamental_scores.empty and ticker in fundamental_scores['ticker'].values:
+                    f_score = fundamental_scores.loc[fundamental_scores['ticker'] == ticker, 'overall_score'].iloc[0]
+                
+                # Récupérer le score technique si disponible
+                if not technical_scores.empty and ticker in technical_scores['ticker'].values:
+                    t_score = technical_scores.loc[technical_scores['ticker'] == ticker, 'overall_score'].iloc[0]
+                
+                # Récupérer ou calculer le score qualitatif si disponible
+                if quality_data and ticker in quality_data:
+                    q_score = self._calculate_quality_score(quality_data[ticker])
+                
+                # Calculer le score global multifactoriel
+                overall_score = self._calculate_multifactor_score(f_score, t_score, q_score)
+                
+                # Ajouter à la liste des scores
+                score_entry = {
+                    'ticker': ticker,
+                    'overall_score': overall_score,
+                    'fundamental_score': f_score if f_score is not None else np.nan,
+                    'technical_score': t_score if t_score is not None else np.nan,
+                    'quality_score': q_score if q_score is not None else np.nan
+                }
+                
+                all_scores.append(score_entry)
+                
+            except Exception as e:
+                logger.error(f"Erreur lors du calcul des scores multifactoriels pour {ticker}: {str(e)}")
+                
+        # Créer un DataFrame avec tous les scores
+        if not all_scores:
+            logger.warning("Aucun score multifactoriel n'a pu être calculé")
             return pd.DataFrame()
             
-        # Fusionner les scores
-        combined_scores = self._combine_scores(fundamental_scores, technical_scores)
+        scores_df = pd.DataFrame(all_scores)
+        
+        # Trier par score global décroissant
+        scores_df = scores_df.sort_values('overall_score', ascending=False)
         
         # Sauvegarder les scores
         if save:
             date_str = pd.Timestamp.now().strftime('%Y%m%d')
-            self.save_scores(combined_scores, f"multifactor_scores_{date_str}.csv")
+            self.save_scores(scores_df, f"multifactor_scores_{date_str}.csv")
             
-        return combined_scores
+        return scores_df
         
-    def _combine_scores(
-        self,
-        fundamental_scores: pd.DataFrame,
-        technical_scores: pd.DataFrame
-    ) -> pd.DataFrame:
+    def _calculate_quality_score(self, quality_data: Dict[str, float]) -> float:
         """
-        Combine les scores fondamentaux et techniques.
+        Calcule un score qualitatif pondéré.
         
         Args:
-            fundamental_scores: DataFrame avec les scores fondamentaux
-            technical_scores: DataFrame avec les scores techniques
+            quality_data: Dictionnaire des scores qualitatifs
             
         Returns:
-            DataFrame combinant les scores fondamentaux et techniques
+            Score qualitatif pondéré entre 0 et 1
         """
-        # Gérer le cas où l'un des DataFrames est vide
-        if fundamental_scores.empty:
-            logger.warning("Scores fondamentaux manquants, utilisation uniquement des scores techniques")
-            technical_scores['overall_score'] = technical_scores['overall_score']
-            return technical_scores
+        weighted_sum = 0
+        total_applied_weight = 0
+        
+        for criterion, score in quality_data.items():
+            if criterion in self.quality_weights:
+                weighted_sum += score * self.quality_weights[criterion]
+                total_applied_weight += self.quality_weights[criterion]
+                
+        # Si aucun poids n'a été appliqué, retourner 0.5 (valeur neutre)
+        if total_applied_weight == 0:
+            return 0.5
             
-        if technical_scores.empty:
-            logger.warning("Scores techniques manquants, utilisation uniquement des scores fondamentaux")
-            fundamental_scores['overall_score'] = fundamental_scores['overall_score']
-            return fundamental_scores
+        # Normaliser par le poids total appliqué
+        return weighted_sum / total_applied_weight
+        
+    def _calculate_multifactor_score(
+        self,
+        fundamental_score: Optional[float],
+        technical_score: Optional[float],
+        quality_score: Optional[float]
+    ) -> float:
+        """
+        Calcule un score global multifactoriel pondéré.
+        
+        Args:
+            fundamental_score: Score fondamental (optionnel)
+            technical_score: Score technique (optionnel)
+            quality_score: Score qualitatif (optionnel)
             
-        # Fusionner sur le ticker
-        combined = pd.merge(
-            fundamental_scores[['ticker', 'overall_score']],
-            technical_scores[['ticker', 'overall_score']],
-            on='ticker',
-            how='outer',
-            suffixes=('_fundamental', '_technical')
-        )
+        Returns:
+            Score global pondéré entre 0 et 1
+        """
+        weighted_sum = 0
+        total_applied_weight = 0
         
-        # Gérer les valeurs manquantes
-        combined.fillna({
-            'overall_score_fundamental': 0.5,  # Valeur neutre pour les scores fondamentaux manquants
-            'overall_score_technical': 0.5     # Valeur neutre pour les scores techniques manquants
-        }, inplace=True)
-        
-        # Calculer le score global pondéré
-        combined['overall_score'] = (
-            combined['overall_score_fundamental'] * self.fundamental_weight +
-            combined['overall_score_technical'] * self.technical_weight
-        )
-        
-        # Trier par score global décroissant
-        combined = combined.sort_values('overall_score', ascending=False)
-        
-        return combined
+        # Ajouter le score fondamental s'il est disponible
+        if fundamental_score is not None:
+            weighted_sum += fundamental_score * self.factor_weights.get('fundamental', 0)
+            total_applied_weight += self.factor_weights.get('fundamental', 0)
+            
+        # Ajouter le score technique s'il est disponible
+        if technical_score is not None:
+            weighted_sum += technical_score * self.factor_weights.get('technical', 0)
+            total_applied_weight += self.factor_weights.get('technical', 0)
+            
+        # Ajouter le score qualitatif s'il est disponible
+        if quality_score is not None:
+            weighted_sum += quality_score * self.factor_weights.get('quality', 0)
+            total_applied_weight += self.factor_weights.get('quality', 0)
+            
+        # Si aucun poids n'a été appliqué, retourner 0.5 (valeur neutre)
+        if total_applied_weight == 0:
+            return 0.5
+            
+        # Normaliser par le poids total appliqué
+        return weighted_sum / total_applied_weight
