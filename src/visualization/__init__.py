@@ -1,1 +1,1 @@
-# Module de visualisation et tableau de bord
+# Module de visualisation pour le modèle de stock picking
