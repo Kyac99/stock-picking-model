@@ -21,6 +21,7 @@ Ce projet développe un modèle de stock picking permettant de sélectionner des
 - `/notebooks`: Jupyter notebooks pour l'exploration et l'analyse
 - `/tests`: Tests unitaires et d'intégration
 - `/docs`: Documentation du projet
+- `dashboard.py`: Interface utilisateur interactive avec Streamlit
 
 ## Fonctionnalités principales
 
@@ -43,6 +44,7 @@ Ce projet développe un modèle de stock picking permettant de sélectionner des
 4. **Visualisation et dashboard**
    - Graphiques interactifs pour l'analyse des résultats
    - Dashboard pour le suivi des performances
+   - Interface utilisateur web avec Streamlit
 
 ## Installation
 
@@ -61,6 +63,27 @@ pip install -r requirements.txt
 
 ## Utilisation
 
+### Dashboard interactif (recommandé)
+
+Le moyen le plus simple d'utiliser le modèle est via l'interface web interactive :
+
+```bash
+# Lancer le dashboard web
+streamlit run dashboard.py
+
+# Ou utiliser le script shell (Linux/Mac)
+./run_dashboard.sh
+```
+
+Le dashboard offre une interface conviviale pour :
+- Sélectionner et collecter des données sur les actions
+- Visualiser les données financières et techniques
+- Exécuter le modèle de scoring pour classer les actions
+- Optimiser un portefeuille selon différentes méthodes
+- Effectuer des backtests et visualiser les performances
+
+![Dashboard Screenshot](docs/dashboard_screenshot.png)
+
 ### Configuration
 
 Le modèle utilise un fichier `config.ini` pour ses paramètres principaux. Vous pouvez éditer ce fichier pour :
@@ -72,7 +95,7 @@ Le modèle utilise un fichier `config.ini` pour ses paramètres principaux. Vous
 
 ### Exécution du modèle de stock picking
 
-Pour exécuter le modèle complet :
+Pour exécuter le modèle complet en ligne de commande :
 
 ```bash
 python run_stock_picker.py
@@ -148,6 +171,21 @@ Le projet inclut plusieurs notebooks Jupyter pour l'exploration et l'analyse :
 
 - `notebooks/stock_analysis_example.ipynb` : Exemple d'analyse des actions avec le modèle
 - `notebooks/portfolio_optimization_example.ipynb` : Exploration des méthodes d'optimisation de portefeuille
+
+## Tests
+
+Le projet comprend une suite de tests unitaires pour garantir la qualité du code. Pour exécuter tous les tests :
+
+```bash
+python -m pytest
+```
+
+Ou pour exécuter une catégorie spécifique de tests :
+
+```bash
+python -m pytest tests/test_data  # Tests pour les collecteurs de données
+python -m pytest tests/test_models  # Tests pour les modèles de scoring et d'optimisation
+```
 
 ## Licence
 
