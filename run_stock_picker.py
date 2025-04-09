@@ -15,6 +15,9 @@ from typing import List, Dict, Optional, Any
 # Ajouter le répertoire src au path Python
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# Créer les répertoires nécessaires
+os.makedirs("logs", exist_ok=True)
+
 from src.data.collectors import YahooFinanceCollector, AlphaVantageCollector
 from src.data.preprocessors import PriceDataPreprocessor, FundamentalDataPreprocessor
 from src.models.scoring import FundamentalScorer, TechnicalScorer, MultifactorScorer
@@ -346,10 +349,6 @@ def calculate_scores(
 
 def main():
     """Fonction principale."""
-    # Créer les répertoires nécessaires
-    os.makedirs("logs", exist_ok=True)
-    os.makedirs("data", exist_ok=True)
-    
     # Parser les arguments de ligne de commande
     args = parse_args()
     
