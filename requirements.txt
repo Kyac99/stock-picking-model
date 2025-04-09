@@ -10,7 +10,7 @@ yfinance==0.2.35
 pandas-datareader==0.10.0
 ta-lib==0.4.28
 pyportfolioopt==1.5.5
-alpha_vantage==2.3.1
+# alpha_vantage==2.3.1 - Remplacé par requests directement
 
 # Visualisation
 matplotlib==3.8.0
