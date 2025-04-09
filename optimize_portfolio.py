@@ -13,6 +13,9 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Union, Any, Tuple
 
+# Créer les répertoires nécessaires
+os.makedirs("logs", exist_ok=True)
+
 # Ajouter le répertoire src au path Python
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -368,10 +371,6 @@ def export_portfolio_to_csv(portfolio_df: pd.DataFrame, method: str, output_dir:
 
 def main():
     """Fonction principale."""
-    # Créer les répertoires nécessaires
-    os.makedirs("logs", exist_ok=True)
-    os.makedirs("data", exist_ok=True)
-    
     # Parser les arguments de ligne de commande
     args = parse_args()
     
