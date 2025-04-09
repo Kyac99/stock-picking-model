@@ -2,15 +2,15 @@
 Module pour la collecte de données financières à partir de différentes sources.
 """
 import os
+import json
 import logging
+import requests
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Union, Any
 
 import pandas as pd
 import yfinance as yf
 from pandas_datareader import data as pdr
-from alpha_vantage.timeseries import TimeSeries
-from alpha_vantage.fundamentaldata import FundamentalData
 
 # Configuration du logging
 logger = logging.getLogger(__name__)
@@ -109,7 +109,7 @@ class YahooFinanceCollector(DataCollector):
         
         Args:
             tickers: Liste des symboles d'actions à récupérer
-            save: Si True, sauvegarde les données dans des fichiers JSON
+            save: Si True, sauvegarde les données dans des fichiers CSV
             
         Returns:
             Dictionnaire de données fondamentales par ticker
@@ -156,7 +156,7 @@ class YahooFinanceCollector(DataCollector):
 
 
 class AlphaVantageCollector(DataCollector):
-    """Collecteur de données depuis Alpha Vantage."""
+    """Collecteur de données depuis Alpha Vantage API."""
     
     def __init__(self, api_key: str, output_dir: str = "../data/raw"):
         """
@@ -167,13 +167,13 @@ class AlphaVantageCollector(DataCollector):
             output_dir: Répertoire où sauvegarder les données brutes
         """
         super().__init__(output_dir)
-        self.ts = TimeSeries(key=api_key, output_format='pandas')
-        self.fd = FundamentalData(key=api_key, output_format='pandas')
+        self.api_key = api_key
+        self.base_url = "https://www.alphavantage.co/query"
         
     def get_time_series(
         self, 
         symbol: str, 
-        function: str = "daily_adjusted",
+        function: str = "TIME_SERIES_DAILY_ADJUSTED",
         outputsize: str = "full",
         save: bool = True
     ) -> pd.DataFrame:
@@ -182,7 +182,7 @@ class AlphaVantageCollector(DataCollector):
         
         Args:
             symbol: Symbole de l'action
-            function: Type de série temporelle à récupérer
+            function: Type de série temporelle à récupérer (TIME_SERIES_DAILY_ADJUSTED, TIME_SERIES_DAILY, etc.)
             outputsize: Taille de sortie ('compact' ou 'full')
             save: Si True, sauvegarde les données dans un fichier CSV
             
@@ -192,30 +192,59 @@ class AlphaVantageCollector(DataCollector):
         try:
             logger.info(f"Récupération des données {function} pour {symbol}...")
             
-            # Appeler la méthode appropriée selon le type de fonction
-            if function == "daily_adjusted":
-                data, meta_data = self.ts.get_daily_adjusted(symbol=symbol, outputsize=outputsize)
-            elif function == "daily":
-                data, meta_data = self.ts.get_daily(symbol=symbol, outputsize=outputsize)
-            elif function == "weekly":
-                data, meta_data = self.ts.get_weekly(symbol=symbol)
-            elif function == "weekly_adjusted":
-                data, meta_data = self.ts.get_weekly_adjusted(symbol=symbol)
-            elif function == "monthly":
-                data, meta_data = self.ts.get_monthly(symbol=symbol)
-            elif function == "monthly_adjusted":
-                data, meta_data = self.ts.get_monthly_adjusted(symbol=symbol)
-            elif function == "intraday":
-                data, meta_data = self.ts.get_intraday(symbol=symbol, interval='60min', outputsize=outputsize)
-            else:
-                logger.error(f"Fonction non prise en charge: {function}")
-                return pd.DataFrame()
+            # Construire l'URL de l'API
+            params = {
+                'function': function,
+                'symbol': symbol,
+                'outputsize': outputsize,
+                'apikey': self.api_key
+            }
             
-            if save and not data.empty:
-                filename = f"{symbol}_{function.lower()}.csv"
-                self.save_data(data, filename)
+            # Ajouter le paramètre interval si nécessaire
+            if function == "TIME_SERIES_INTRADAY":
+                params['interval'] = '60min'  # Par défaut
                 
-            return data
+            # Faire la requête à l'API
+            response = requests.get(self.base_url, params=params)
+            data = response.json()
+            
+            # Vérifier si la réponse contient une erreur
+            if 'Error Message' in data:
+                logger.error(f"Erreur API Alpha Vantage: {data['Error Message']}")
+                return pd.DataFrame()
+                
+            # Déterminer la clé pour les données de séries temporelles
+            time_series_key = None
+            for key in data.keys():
+                if 'Time Series' in key:
+                    time_series_key = key
+                    break
+                    
+            if time_series_key is None:
+                logger.error(f"Impossible de trouver les données de séries temporelles dans la réponse")
+                return pd.DataFrame()
+                
+            # Convertir les données en DataFrame
+            df = pd.DataFrame.from_dict(data[time_series_key], orient='index')
+            
+            # Renommer les colonnes pour supprimer les préfixes
+            df.columns = [col.split('. ')[1] if '. ' in col else col for col in df.columns]
+            
+            # Convertir l'index en datetime
+            df.index = pd.to_datetime(df.index)
+            
+            # Convertir les colonnes en valeurs numériques
+            for col in df.columns:
+                df[col] = pd.to_numeric(df[col])
+                
+            # Trier par date
+            df = df.sort_index()
+            
+            if save and not df.empty:
+                filename = f"{symbol}_{function.lower()}.csv"
+                self.save_data(df, filename)
+                
+            return df
             
         except Exception as e:
             logger.error(f"Erreur lors de la récupération des données {function} pour {symbol}: {str(e)}")
@@ -232,7 +261,8 @@ class AlphaVantageCollector(DataCollector):
         
         Args:
             symbol: Symbole de l'action
-            function: Type de données fondamentales à récupérer
+            function: Type de données fondamentales à récupérer 
+                      (INCOME_STATEMENT, BALANCE_SHEET, CASH_FLOW, OVERVIEW, etc.)
             save: Si True, sauvegarde les données dans un fichier CSV
             
         Returns:
@@ -241,30 +271,62 @@ class AlphaVantageCollector(DataCollector):
         try:
             logger.info(f"Récupération des données {function} pour {symbol}...")
             
-            # Appeler la méthode appropriée selon le type de fonction
-            if function == "income_statement":
-                data, meta_data = self.fd.get_income_statement_annual(symbol=symbol)
-            elif function == "income_statement_quarterly":
-                data, meta_data = self.fd.get_income_statement_quarterly(symbol=symbol)
-            elif function == "balance_sheet":
-                data, meta_data = self.fd.get_balance_sheet_annual(symbol=symbol)
-            elif function == "balance_sheet_quarterly":
-                data, meta_data = self.fd.get_balance_sheet_quarterly(symbol=symbol)
-            elif function == "cash_flow":
-                data, meta_data = self.fd.get_cash_flow_annual(symbol=symbol)
-            elif function == "cash_flow_quarterly":
-                data, meta_data = self.fd.get_cash_flow_quarterly(symbol=symbol)
-            elif function == "overview":
-                data, meta_data = self.fd.get_company_overview(symbol=symbol)
-            else:
-                logger.error(f"Fonction non prise en charge: {function}")
-                return pd.DataFrame()
+            # Construire l'URL de l'API
+            params = {
+                'function': function,
+                'symbol': symbol,
+                'apikey': self.api_key
+            }
             
-            if save and not data.empty:
-                filename = f"{symbol}_{function.lower()}.csv"
-                self.save_data(data, filename)
+            # Faire la requête à l'API
+            response = requests.get(self.base_url, params=params)
+            data = response.json()
+            
+            # Vérifier si la réponse contient une erreur
+            if 'Error Message' in data:
+                logger.error(f"Erreur API Alpha Vantage: {data['Error Message']}")
+                return pd.DataFrame()
                 
-            return data
+            # Traiter les données selon le type de fonction
+            if function == "OVERVIEW":
+                # Pour les données générales de l'entreprise
+                df = pd.DataFrame([data])
+                
+            elif function in ["INCOME_STATEMENT", "BALANCE_SHEET", "CASH_FLOW"]:
+                # Pour les états financiers
+                report_type = function.replace('_', ' ').title().replace(' ', '')
+                annual_reports = data.get(f"annual{report_type}", [])
+                quarterly_reports = data.get(f"quarterly{report_type}", [])
+                
+                if not annual_reports and not quarterly_reports:
+                    logger.error(f"Aucune donnée trouvée pour {function}")
+                    return pd.DataFrame()
+                    
+                # Utiliser les rapports annuels par défaut
+                reports = annual_reports if annual_reports else quarterly_reports
+                
+                # Transformer les données en DataFrame
+                df = pd.DataFrame(reports)
+                
+                # Convertir les colonnes numériques
+                for col in df.columns:
+                    if col != 'fiscalDateEnding' and col != 'reportedCurrency':
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                        
+                # Définir la date comme index
+                if 'fiscalDateEnding' in df.columns:
+                    df['fiscalDateEnding'] = pd.to_datetime(df['fiscalDateEnding'])
+                    df = df.set_index('fiscalDateEnding')
+                    df = df.sort_index()
+            else:
+                # Pour d'autres types de données
+                df = pd.DataFrame(data)
+                
+            if save and not df.empty:
+                filename = f"{symbol}_{function.lower()}.csv"
+                self.save_data(df, filename)
+                
+            return df
             
         except Exception as e:
             logger.error(f"Erreur lors de la récupération des données {function} pour {symbol}: {str(e)}")
