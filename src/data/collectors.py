@@ -9,7 +9,8 @@ from typing import List, Dict, Optional, Union, Any
 import pandas as pd
 import yfinance as yf
 from pandas_datareader import data as pdr
-from alphavantage import AlphaVantage
+from alpha_vantage.timeseries import TimeSeries
+from alpha_vantage.fundamentaldata import FundamentalData
 
 # Configuration du logging
 logger = logging.getLogger(__name__)
@@ -166,12 +167,13 @@ class AlphaVantageCollector(DataCollector):
             output_dir: Répertoire où sauvegarder les données brutes
         """
         super().__init__(output_dir)
-        self.av = AlphaVantage(api_key=api_key)
+        self.ts = TimeSeries(key=api_key, output_format='pandas')
+        self.fd = FundamentalData(key=api_key, output_format='pandas')
         
     def get_time_series(
         self, 
         symbol: str, 
-        function: str = "TIME_SERIES_DAILY_ADJUSTED",
+        function: str = "daily_adjusted",
         outputsize: str = "full",
         save: bool = True
     ) -> pd.DataFrame:
@@ -189,9 +191,27 @@ class AlphaVantageCollector(DataCollector):
         """
         try:
             logger.info(f"Récupération des données {function} pour {symbol}...")
-            data = self.av.data(function=function, symbol=symbol, outputsize=outputsize)
             
-            if save and data is not None:
+            # Appeler la méthode appropriée selon le type de fonction
+            if function == "daily_adjusted":
+                data, meta_data = self.ts.get_daily_adjusted(symbol=symbol, outputsize=outputsize)
+            elif function == "daily":
+                data, meta_data = self.ts.get_daily(symbol=symbol, outputsize=outputsize)
+            elif function == "weekly":
+                data, meta_data = self.ts.get_weekly(symbol=symbol)
+            elif function == "weekly_adjusted":
+                data, meta_data = self.ts.get_weekly_adjusted(symbol=symbol)
+            elif function == "monthly":
+                data, meta_data = self.ts.get_monthly(symbol=symbol)
+            elif function == "monthly_adjusted":
+                data, meta_data = self.ts.get_monthly_adjusted(symbol=symbol)
+            elif function == "intraday":
+                data, meta_data = self.ts.get_intraday(symbol=symbol, interval='60min', outputsize=outputsize)
+            else:
+                logger.error(f"Fonction non prise en charge: {function}")
+                return pd.DataFrame()
+            
+            if save and not data.empty:
                 filename = f"{symbol}_{function.lower()}.csv"
                 self.save_data(data, filename)
                 
@@ -220,9 +240,27 @@ class AlphaVantageCollector(DataCollector):
         """
         try:
             logger.info(f"Récupération des données {function} pour {symbol}...")
-            data = self.av.fundamentals(function=function, symbol=symbol)
             
-            if save and data is not None:
+            # Appeler la méthode appropriée selon le type de fonction
+            if function == "income_statement":
+                data, meta_data = self.fd.get_income_statement_annual(symbol=symbol)
+            elif function == "income_statement_quarterly":
+                data, meta_data = self.fd.get_income_statement_quarterly(symbol=symbol)
+            elif function == "balance_sheet":
+                data, meta_data = self.fd.get_balance_sheet_annual(symbol=symbol)
+            elif function == "balance_sheet_quarterly":
+                data, meta_data = self.fd.get_balance_sheet_quarterly(symbol=symbol)
+            elif function == "cash_flow":
+                data, meta_data = self.fd.get_cash_flow_annual(symbol=symbol)
+            elif function == "cash_flow_quarterly":
+                data, meta_data = self.fd.get_cash_flow_quarterly(symbol=symbol)
+            elif function == "overview":
+                data, meta_data = self.fd.get_company_overview(symbol=symbol)
+            else:
+                logger.error(f"Fonction non prise en charge: {function}")
+                return pd.DataFrame()
+            
+            if save and not data.empty:
                 filename = f"{symbol}_{function.lower()}.csv"
                 self.save_data(data, filename)
                 
